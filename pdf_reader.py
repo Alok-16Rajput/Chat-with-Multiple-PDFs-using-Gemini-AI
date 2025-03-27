@@ -1,6 +1,5 @@
 import streamlit as st
 import io
-import os
 from PyPDF2 import PdfReader
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_google_genai import GoogleGenerativeAIEmbeddings
@@ -10,19 +9,18 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain.chains.question_answering import load_qa_chain
 from langchain.prompts import PromptTemplate
 from langchain.schema import Document
-from dotenv import load_dotenv
 
-# Load environment variables
-load_dotenv()
-API_KEY = os.getenv("API_KEY")
-
+# Load API key from Streamlit secrets
+API_KEY = st.secrets["API_KEY"]
 genai.configure(api_key=API_KEY)
 
 # Function to extract text from PDFs
 def get_pdf_text(pdf_docs):
     text = []
     for pdf in pdf_docs:
-        pdf_reader = PdfReader(io.BytesIO(pdf.read()))
+        pdf_bytes = pdf.read()
+        st.write(f"Processing file: {pdf.name}, Size: {len(pdf_bytes)} bytes")  # Debugging output
+        pdf_reader = PdfReader(io.BytesIO(pdf_bytes))
         for page in pdf_reader.pages:
             extracted_text = page.extract_text() or ""
             text.append(extracted_text)
@@ -33,12 +31,11 @@ def get_text_chunks(text):
     text_splitter = RecursiveCharacterTextSplitter(chunk_size=10000, chunk_overlap=1000)
     return text_splitter.split_text(text)
 
-# Function to create and store embeddings
+# Function to create and store embeddings in memory
 def get_vector_store(text_chunks):
     embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
     vector_store = FAISS.from_texts(text_chunks, embedding=embeddings)
-    vector_store.save_local("faiss_index")
-    st.session_state["vector_store"] = vector_store
+    st.session_state["vector_store"] = vector_store  # Store in memory
 
 # Function to set up a conversational chain
 def get_conversational_chain():
@@ -60,19 +57,18 @@ def query_documents(user_question, query_method):
         st.warning("Please upload and process PDF files first.")
         return "Please upload and process PDFs first."
 
-    embeddings = GoogleGenerativeAIEmbeddings(model="models/embedding-001")
-    new_db = FAISS.load_local("faiss_index", embeddings, allow_dangerous_deserialization=True)
+    vector_store = st.session_state["vector_store"]  # Load from memory
 
     # Perform search based on query method
     if query_method == "Semantic Search":
-        docs = new_db.similarity_search(user_question)
+        docs = vector_store.similarity_search(user_question)
     elif query_method == "Keyword Search":
-        results = new_db.similarity_search_with_score(user_question)
+        results = vector_store.similarity_search_with_score(user_question)
         docs = [doc for doc, score in results if isinstance(doc, Document)]  # Ensure only Documents
     else:  # Full-Text Search
-        docs = new_db.max_marginal_relevance_search(user_question)
+        docs = vector_store.max_marginal_relevance_search(user_question)
 
-    # Ensure docs only contain valid LangChain Document objects
+    # Ensure docs contain valid LangChain Document objects
     docs = [doc for doc in docs if hasattr(doc, "page_content")]
 
     if not docs:
